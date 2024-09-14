@@ -111,21 +111,58 @@ class Generator:
             docs = self.storage.similarity_search(censored_input)
 
             if docs:
-                context = "\n".join([doc.page_content for doc in docs])
-                result = self.generate_response(censored_input, context)
+            context = "\n".join([doc.page_content for doc in docs])
+            messages = [
+                {"role": "system", "content": """You are a helpful assistant. Answer the question using the provided context from corporate documents. 
+                Along with your answer, provide a confidence score between 0 and 1, where 0 means you're not at all confident and 1 means you're absolutely certain.
+                Format your response as JSON with 'answer' and 'confidence' fields.
+                If you cannot find a relevant answer based on the given context, set the confidence to 0.
+                Ensure that you filter out any inappropriate or offensive language in your response."""},
+                {"role": "user", "content": f"Context: {context}\n\nQuestion: {user_input}"}
+            ]
+            response = client.chat.completions.create(
+                model="gpt-4",
+                messages=messages,
+                max_tokens=300,
+            )
+            result = json.loads(response.choices[0].message.content)
+            
+            if result['confidence'] > 0.5:  # You can adjust this threshold
+                answer_found = True
+                response_text = f"Answer from corp data (confidence: {result['confidence']}): {result['answer']}"
+
+        # 2. If no answer from corp data, try to answer from image analysis
+        if not answer_found:
+            relevant_images = list(image_collection.find().sort("_id", -1).limit(5))
+            if relevant_images:
+                image_descriptions = [img['analysis'] for img in relevant_images]
+                combined_context = "\n".join(image_descriptions)
+                messages = [
+                    {"role": "system", "content": """You are a helpful assistant. Answer the question using the provided image descriptions. 
+                    Along with your answer, provide a confidence score between 0 and 1, where 0 means you're not at all confident and 1 means you're absolutely certain.
+                    Format your response as JSON with 'answer' and 'confidence' fields.If you cannot find a relevant answer based on the given context, set the confidence to 0.
+                    Ensure that you filter out any inappropriate or offensive language in your response."""},
+                    {"role": "user", "content": f"Image descriptions:\n{combined_context}\n\nQuestion: {user_input}"}
+                ]
+                response = client.chat.completions.create(
+                    model="gpt-4",
+                    messages=messages,
+                    max_tokens=300,
+                )
+                result = json.loads(response.choices[0].message.content)
                 
                 if result['confidence'] > 0.5:  # You can adjust this threshold
-                    response_text = f"Answer (confidence: {result['confidence']}): {result['answer']}"
-                else:
-                    response_text = "I don't have enough confident information to answer this question."
-            else:
-                response_text = "No relevant information found to answer the question."
+                    answer_found = True
+                    response_text = f"Answer from image analysis (confidence: {result['confidence']}): {result['answer']}"
 
-            return {"response": response_text}
-        except Exception as e:
-            logging.error(f"Error in ask_question: {str(e)}")
-            return {"error": "An error occurred while processing your request"}, 500
+        # 3. If no answer is found from both methods, return default message
+        if not answer_found:
+            response_text = "I don't have enough confident information to answer this question."
 
+        return jsonify({"response": response_text})
+    except Exception as e:
+        logging.error(f"Error in ask_question endpoint: {str(e)}")
+        return jsonify({"error": "An error occurred while processing your request"}), 500
 # Initialize classes
 ingestion = Ingestion()
 storage = Storage()
